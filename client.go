@@ -5,28 +5,26 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"html/template"
 	"io"
 	"net/http"
 	"os"
+	"time"
 
-	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"
 	"github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
 	"golang.org/x/oauth2"
-	redisStore "gopkg.in/boj/redistore.v1"
 
 	"context"
-	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 
 	twitter "github.com/g8rswimmer/go-twitter/v2"
 )
 
+///////// Twitter APIを使うための設定 //////////
+
+// OAuth2.Configの生成
 var (
 	config = oauth2.Config{
 		ClientID:     os.Getenv("CLIENT_ID"),
@@ -42,6 +40,7 @@ var (
 	}
 )
 
+// code_verifier, code_challenge用のrandom byte生成
 func randomBytesInHex(count int) (string, error) {
 	buf := make([]byte, count)
 	_, err := io.ReadFull(rand.Reader, buf)
@@ -52,12 +51,12 @@ func randomBytesInHex(count int) (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// create Callback URL
+// Authorization Request用のURL生成
 func GetRedirectUrl(c echo.Context) error {
 	sess, _ := session.Get("session", c)
 	sess.Options = &sessions.Options{
 		Path:     "/",
-		MaxAge:   60 * 5,
+		MaxAge:   60 * 60 * 10,
 		HttpOnly: true,
 		Secure:   true,
 	}
@@ -82,13 +81,16 @@ func GetRedirectUrl(c echo.Context) error {
 		return err
 	}
 
-	return c.Redirect(http.StatusSeeOther, config.AuthCodeURL(state, oauth2.AccessTypeOffline,
+	return c.Redirect(http.StatusSeeOther, config.AuthCodeURL(
+		state,
+		oauth2.AccessTypeOffline,
 		oauth2.SetAuthURLParam("response_type", "code"),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
 		oauth2.SetAuthURLParam("code_challenge", codeChallenge),
 	))
 }
 
+// 許可コードを TokenURL に提示して token を取得する
 func GetToken(c echo.Context) error {
 	stateParam := c.QueryParam("state")
 	sess, _ := session.Get("session", c)
@@ -101,20 +103,19 @@ func GetToken(c echo.Context) error {
 		return c.NoContent(http.StatusForbidden)
 	}
 	verifier, _ := sess.Values["verifier"].(string)
-	token, err := config.Exchange(oauth2.NoContext, code, oauth2.SetAuthURLParam("code_verifier", verifier))
+	token, err := config.Exchange(
+		oauth2.NoContext,
+		code, oauth2.SetAuthURLParam("code_verifier", verifier))
 	if err != nil {
 		return err
 	}
 	sess.Values["token"] = token.AccessToken
+	sess.Values["refreshtoken"] = token.RefreshToken
 	err = sess.Save(c.Request(), c.Response())
 	if err != nil {
 		return err
 	}
 	return c.Redirect(http.StatusSeeOther, "/tweet")
-}
-
-func TweetView(c echo.Context) error {
-	return c.Render(http.StatusOK, "tweet.html", map[string]interface{}{})
 }
 
 type authorize struct {
@@ -125,26 +126,24 @@ func (a authorize) Add(req *http.Request) {
 	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", a.Token))
 }
 
+// Twitter API v2 でツイートを投稿する
 func CreateTweet(c echo.Context) error {
 	sess, _ := session.Get("session", c)
 	session_token, _ := sess.Values["token"].(string)
 
-	token := flag.String("token", session_token, "twitter API token")
-	text := flag.String("text", c.FormValue("text"), "twitter text")
-	flag.Parse()
+	text := c.FormValue("text")
 
 	client := &twitter.Client{
 		Authorizer: authorize{
-			Token: *token,
+			Token: session_token,
 		},
 		Client: http.DefaultClient,
 		Host:   "https://api.twitter.com",
 	}
 
 	req := twitter.CreateTweetRequest{
-		Text: *text,
+		Text: text,
 	}
-	fmt.Println("Callout to create tweet callout")
 
 	tweetResponse, err := client.CreateTweet(context.Background(), req)
 	if err != nil {
@@ -152,60 +151,26 @@ func CreateTweet(c echo.Context) error {
 		return err
 	}
 
-	enc, err := json.MarshalIndent(tweetResponse, "", "    ")
+	return c.JSON(http.StatusOK, tweetResponse)
+}
+
+// RefreshTokenを使ってAccessTokenを再取得する
+func Refresh(c echo.Context) error {
+	sess, _ := session.Get("session", c)
+	refreshtoken, _ := sess.Values["refreshtoken"].(string)
+	fmt.Println(refreshtoken)
+	token := new(oauth2.Token)
+	token.AccessToken = ""
+	token.RefreshToken = refreshtoken
+	token.Expiry = time.Now()
+	newtoken, err := config.TokenSource(c.Request().Context(), token).Token()
 	if err != nil {
-		log.Panic(err)
 		return err
 	}
-	return c.JSON(http.StatusOK, string(enc))
-}
-
-// TemplateRenderer is a custom html/template renderer for Echo framework
-type TemplateRenderer struct {
-	templates *template.Template
-}
-
-// Render renders a template document
-func (t *TemplateRenderer) Render(w io.Writer, name string, data interface{}, c echo.Context) error {
-
-	// Add global methods if data is a map
-	if viewContext, isMap := data.(map[string]interface{}); isMap {
-		viewContext["reverse"] = c.Echo().Reverse
-	}
-
-	return t.templates.ExecuteTemplate(w, name, data)
-}
-
-func main() {
-	router := NewRouter()
-	// Start server
-	router.Logger.Fatal(router.Start(":18199"))
-}
-
-func NewRouter() *echo.Echo {
-	// Echo instance
-	e := echo.New()
-	store, err := redisStore.NewRediStore(10, "tcp", ":6379", "", []byte(securecookie.GenerateRandomKey(32)))
+	sess.Values["token"] = newtoken.AccessToken
+	err = sess.Save(c.Request(), c.Response())
 	if err != nil {
-		panic(err)
+		return err
 	}
-	e.Use(session.Middleware(store))
-
-	// Setting template
-	renderer := &TemplateRenderer{
-		templates: template.Must(template.ParseGlob("public/views/*.html")),
-	}
-	e.Renderer = renderer
-
-	// Middleware
-	e.Use(middleware.Logger())
-	e.Use(middleware.Recover())
-
-	// Routes
-	e.GET("/", GetRedirectUrl)
-	e.GET("/oauth2", GetToken)
-	e.GET("/tweet", TweetView)
-	e.POST("/createtweet", CreateTweet)
-
-	return e
+	return c.Redirect(http.StatusSeeOther, "/tweet")
 }
