@@ -90,7 +90,7 @@ func GetRedirectUrl(c echo.Context) error {
 	))
 }
 
-// 許可コードを TokenURL に提示して token を取得する
+// 認可コードを TokenURL に提示して token を取得する
 func GetToken(c echo.Context) error {
 	stateParam := c.QueryParam("state")
 	sess, _ := session.Get("session", c)
