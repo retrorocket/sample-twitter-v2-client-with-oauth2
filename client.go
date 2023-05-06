@@ -158,7 +158,6 @@ func CreateTweet(c echo.Context) error {
 func Refresh(c echo.Context) error {
 	sess, _ := session.Get("session", c)
 	refreshtoken, _ := sess.Values["refreshtoken"].(string)
-	fmt.Println(refreshtoken)
 	token := new(oauth2.Token)
 	token.AccessToken = ""
 	token.RefreshToken = refreshtoken
