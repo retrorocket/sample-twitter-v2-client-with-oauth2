@@ -41,6 +41,8 @@ var (
 )
 
 // code_verifier, code_challenge用のrandom byte生成
+// この記事の解説が一番わかりやすかったので参考にした
+// https://chrisguitarguy.com/2022/12/07/oauth-pkce-with-go/
 func randomBytesInHex(count int) (string, error) {
 	buf := make([]byte, count)
 	_, err := io.ReadFull(rand.Reader, buf)
@@ -49,6 +51,22 @@ func randomBytesInHex(count int) (string, error) {
 	}
 
 	return hex.EncodeToString(buf), nil
+}
+
+// Tokenの有無と有効期限をチェックする
+func CheckToken(c echo.Context) error {
+	sess, _ := session.Get("session", c)
+	expiry, _ := sess.Values["expiry"]
+	if expiry == nil {
+		// 有効期限がセッションにないならRefreshTokenとAccessTokenを取得する
+		return c.Redirect(http.StatusSeeOther, "/try")
+	}
+	expiryTime := time.Unix(expiry.(int64), 0)
+	if time.Now().After(expiryTime) {
+		// 有効期限切れならAccessTokenを取得する
+		return c.Redirect(http.StatusSeeOther, "/refresh")
+	}
+	return c.Redirect(http.StatusSeeOther, "/tweet")
 }
 
 // Authorization Request用のURL生成
@@ -111,6 +129,7 @@ func GetToken(c echo.Context) error {
 	}
 	sess.Values["token"] = token.AccessToken
 	sess.Values["refreshtoken"] = token.RefreshToken
+	sess.Values["expiry"] = token.Expiry.Unix()
 	err = sess.Save(c.Request(), c.Response())
 	if err != nil {
 		return err

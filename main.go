@@ -60,7 +60,8 @@ func NewRouter() *echo.Echo {
 	e.Use(middleware.Recover())
 
 	// Routes
-	e.GET("/", GetRedirectUrl)
+	e.GET("/", CheckToken)
+	e.GET("/try", GetRedirectUrl)
 	e.GET("/oauth2", GetToken)
 	e.GET("/tweet", TweetView)
 	e.POST("/createtweet", CreateTweet)
