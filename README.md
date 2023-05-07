@@ -2,7 +2,7 @@
 
 Twitter API v2をOAuth 2.0で使用するサンプル
 
-* このサンプルではscopeを`"tweet.read", "tweet.write", "users.read"`に設定している。
+* このサンプルではscopeを`"tweet.read", "tweet.write", "users.read", "offline.access"`に設定している。
 * トークン取得後ツイートを投稿する。
 
 ## 使い方
